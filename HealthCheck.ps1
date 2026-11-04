@@ -13,6 +13,9 @@
 .VERSION
     1.1
 
+.COPYRIGHT
+    Copyright (c) 2026 Milad. All rights reserved.
+
 .NOTES
     Read-only diagnostic script.
     Creates a report folder and writes CSV files.
@@ -133,7 +136,6 @@ if ($TestMode -ne "None") {
             -ForegroundColor Magenta
     }
 }
-
 
 # 5. Export disk report
 try {
@@ -338,12 +340,11 @@ try {
     }
 
     $diskRows = foreach ($disk in $systemReport) {
-        $color = switch ($disk.Status) {
-    "OK"       { "#198754" }
-    "WARNING"  { "#ffc107" }
-    "CRITICAL" { "#dc3545" }
-    default    { "#6c757d" }
-}
+        $color = if ($disk.Status -eq "WARNING") {
+            "#dc3545"
+        } else {
+            "#198754"
+        }
 
         @"
 <tr>
@@ -432,7 +433,6 @@ footer {
     <span class="status">$overallStatus</span>
     <p><strong>Computer:</strong> $env:COMPUTERNAME</p>
     <p><strong>Report Date:</strong> $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")</p>
-    <p><strong>Test Mode:</strong> $TestMode</p>
     <p><strong>Windows:</strong> $($computer.WindowsProductName)</p>
     <p><strong>OS Version:</strong> $($computer.OsVersion)</p>
 </div>
