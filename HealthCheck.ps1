@@ -168,7 +168,109 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 7. Network connectivity test
+
+# 7. RAM Monitoring
+
+Write-Host "`n--- RAM Information ---" -ForegroundColor Yellow
+
+try {
+    $osMemory = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+
+    $totalRAM = $osMemory.TotalVisibleMemorySize
+    $freeRAM = $osMemory.FreePhysicalMemory
+    $usedRAM = $totalRAM - $freeRAM
+
+    $totalRAMGB = [math]::Round($totalRAM / 1MB, 2)
+    $freeRAMGB = [math]::Round($freeRAM / 1MB, 2)
+    $usedRAMGB = [math]::Round($usedRAM / 1MB, 2)
+
+    $ramUsage = [math]::Round(
+        ($usedRAM / $totalRAM) * 100, 2
+    )
+
+    if ($ramUsage -ge 90) {
+        $ramStatus = "CRITICAL"
+    }
+    elseif ($ramUsage -ge 80) {
+        $ramStatus = "WARNING"
+    }
+   
+    else {
+        $ramStatus = "OK"
+    }
+
+    # Test Mode - Simulate RAM health conditions
+
+    if ($TestMode -ne "None") {
+
+        switch ($TestMode) {
+            "Warning" {
+                $ramUsage = 85
+                $ramStatus = "WARNING"
+            }
+
+            "Critical" {
+                $ramUsage = 95
+                $ramStatus = "CRITICAL"
+            }
+        }
+
+        # Update simulated RAM values
+        $usedRAMGB = [math]::Round(
+            $totalRAMGB * $ramUsage / 100, 2
+        )
+
+        $freeRAMGB = [math]::Round(
+            $totalRAMGB - $usedRAMGB, 2
+        )
+
+        Write-Host "Simulated RAM condition: $ramStatus" `
+            -ForegroundColor Magenta
+    }
+
+    $ramReport = [PSCustomObject]@{
+
+        ComputerName = $env:COMPUTERNAME
+        ReportDate   = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        TotalRAMGB   = $totalRAMGB
+        UsedRAMGB    = $usedRAMGB
+        FreeRAMGB    = $freeRAMGB
+        UsagePercent = $ramUsage
+        Status       = $ramStatus
+    }
+
+    Write-Host "Total RAM: $totalRAMGB GB"
+    Write-Host "Used RAM: $usedRAMGB GB"
+    Write-Host "Free RAM: $freeRAMGB GB"
+    Write-Host "RAM Usage: $ramUsage %"
+
+    if ($ramStatus -eq "OK") {
+        Write-Host "RAM Status: $ramStatus" -ForegroundColor Green
+    }
+    elseif ($ramStatus -eq "WARNING") {
+        Write-Host "RAM Status: $ramStatus" -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "RAM Status: $ramStatus" -ForegroundColor Red
+    }
+
+    $ramReportPath = Join-Path $reportDirectory "RAMReport.csv"
+
+    $ramReport | Export-Csv -Path $ramReportPath `
+        -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+
+    Write-Host "RAM report saved: $ramReportPath" `
+        -ForegroundColor Green
+}
+catch {
+    $ramStatus = "WARNING"
+    Write-Host "ERROR: Could not collect RAM information." `
+        -ForegroundColor Red
+    Write-Host $_.Exception.Message
+}
+
+
+# 8. Network connectivity test
 Write-Host "`n--- Network Test ---" -ForegroundColor Yellow
 
 try {
@@ -198,7 +300,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 8. Service status summary
+# 9. Service status summary
 Write-Host "`n--- Service Status Summary ---" -ForegroundColor Yellow
 
 try {
@@ -216,7 +318,7 @@ try {
     Write-Host "Stopped services: $stoppedCount" -ForegroundColor Yellow
     Write-Host "Total services: $($allServices.Count)"
 
-    # 9. Export service summary
+    # 10. Export service summary
     $serviceReport = [PSCustomObject]@{
         ComputerName    = $env:COMPUTERNAME
         ReportDate      = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -275,23 +377,31 @@ else {
     $networkStatus = "WARNING"
 }
 
+
 # Determine overall status
-if ($diskStatus -eq "CRITICAL") {
+
+if ($diskStatus -eq "CRITICAL" -or
+    $ramStatus -eq "CRITICAL") {
+
     $overallStatus = "CRITICAL"
 }
 elseif ($diskStatus -eq "WARNING" -or
-        $networkStatus -eq "WARNING") {
+        $networkStatus -eq "WARNING" -or
+        $ramStatus -eq "WARNING") {
+
     $overallStatus = "WARNING"
 }
 else {
     $overallStatus = "OK"
 }
 
+
 # Create summary report
 $healthSummary = [PSCustomObject]@{
     ComputerName  = $env:COMPUTERNAME
     ReportDate    = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     DiskStatus    = $diskStatus
+    RAMStatus     = $ramStatus
     NetworkStatus = $networkStatus
     OverallStatus = $overallStatus
 }
@@ -339,6 +449,20 @@ try {
         default    { "#6c757d" }
     }
 
+
+$ramStatusColor = switch ($ramStatus) {
+    "OK"       { "#198754" }
+    "WARNING"  { "#ffc107" }
+    "CRITICAL" { "#dc3545" }
+    default    { "#6c757d" }
+}
+
+$ramStatusColor = switch ($ramStatus) {
+    "OK"       { "#198754" }
+    "WARNING"  { "#ffc107" }
+    "CRITICAL" { "#dc3545" }
+    default    { "#6c757d" }
+}
     $diskRows = foreach ($disk in $systemReport) {
         $color = if ($disk.Status -eq "WARNING") {
             "#dc3545"
@@ -452,6 +576,18 @@ footer {
 </div>
 
 <div class="card">
+    <h2>RAM Health</h2>
+    <p><strong>Total RAM:</strong> $totalRAMGB GB</p>
+    <p><strong>Used RAM:</strong> $usedRAMGB GB</p>
+    <p><strong>Free RAM:</strong> $freeRAMGB GB</p>
+    <p><strong>RAM Usage:</strong> $ramUsage %</p>
+    <p><strong>RAM Status:</strong>
+<span style="color:$ramStatusColor;font-weight:bold">
+$ramStatus
+</span></p>
+</div>
+
+<div class="card">
     <h2>Network Connectivity</h2>
     <p><strong>Status:</strong> $networkStatus</p>
     <p>$networkText</p>
@@ -479,7 +615,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 10. Completion
+# 12. Completion
 Write-Host "`n==================================" -ForegroundColor Cyan
 Write-Host "Health check completed." -ForegroundColor Green
 Write-Host "Reports folder: $reportDirectory" -ForegroundColor Cyan
