@@ -168,6 +168,63 @@ catch {
     Write-Host $_.Exception.Message
 }
 
+# 6. CPU Monitoring
+
+Write-Host "`n--- CPU Information ---" -ForegroundColor Yellow
+
+try {
+    $cpuSamples = Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor `
+        -Filter "Name='_Total'" -ErrorAction Stop
+
+    if ($null -eq $cpuSamples) {
+        throw "CPU performance data is unavailable."
+    }
+
+    $cpuUsage = [math]::Round($cpuSamples.PercentProcessorTime, 2)
+
+    # CPU Test Mode
+
+if ($TestMode -eq "Warning") {
+    $cpuUsage = 85
+}
+elseif ($TestMode -eq "Critical") {
+    $cpuUsage = 95
+}
+
+    if ($cpuUsage -ge 90) {
+        $cpuStatus = "CRITICAL"
+    }
+    elseif ($cpuUsage -ge 80) {
+        $cpuStatus = "WARNING"
+    }
+    else {
+        $cpuStatus = "OK"
+    }
+
+    $cpuReport = [PSCustomObject]@{
+        ComputerName = $env:COMPUTERNAME
+        ReportDate   = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        CPUUsage     = $cpuUsage
+        Status       = $cpuStatus
+    }
+
+    Write-Host "CPU Usage: $cpuUsage %"
+    Write-Host "CPU Status: $cpuStatus"
+
+    $cpuCsvPath = Join-Path $reportDirectory "CPUReport.csv"
+
+    $cpuReport | Export-Csv -Path $cpuCsvPath `
+        -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+
+    Write-Host "CPU report saved: $cpuCsvPath" -ForegroundColor Green
+}
+catch {
+    $cpuStatus = "UNKNOWN"
+    $cpuUsage = "N/A"
+
+    Write-Host "CPU information unavailable." -ForegroundColor Yellow
+    Write-Host $_.Exception.Message
+}
 
 # 7. RAM Monitoring
 
@@ -380,7 +437,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 8. Network connectivity test
+# 9. Network connectivity test
 Write-Host "`n--- Network Test ---" -ForegroundColor Yellow
 
 try {
@@ -410,7 +467,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 9. Service status summary
+# 10. Service status summary
 Write-Host "`n--- Service Status Summary ---" -ForegroundColor Yellow
 
 try {
@@ -452,7 +509,7 @@ catch {
 }
 
 
-# 10. Overall health summary
+# 11. Overall health summary
 
 Write-Host "`n--- Overall System Health ---" -ForegroundColor Yellow
 
@@ -491,12 +548,14 @@ else {
 # Determine overall status
 
 if ($diskStatus -eq "CRITICAL" -or
+    $cpuStatus -eq "CRITICAL" -or
     $ramStatus -eq "CRITICAL" -or
     $batteryStatus -eq "CRITICAL") {
 
     $overallStatus = "CRITICAL"
 }
 elseif ($diskStatus -eq "WARNING" -or
+        $cpuStatus -eq "WARNING" -or
         $networkStatus -eq "WARNING" -or
         $ramStatus -eq "WARNING" -or
         $batteryStatus -eq "WARNING") {
@@ -513,6 +572,7 @@ $healthSummary = [PSCustomObject]@{
     ComputerName  = $env:COMPUTERNAME
     ReportDate    = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     DiskStatus    = $diskStatus
+    CPUStatus     = $cpuStatus
     RAMStatus     = $ramStatus
     BatteryStatus = $batteryStatus
     NetworkStatus = $networkStatus
@@ -522,6 +582,7 @@ $healthSummary = [PSCustomObject]@{
 # Display results
 Write-Host "Disk status:    $diskStatus"
 Write-Host "Network status: $networkStatus"
+Write-Host "CPU status:     $cpuStatus"
 Write-Host "RAM status:     $ramStatus"
 Write-Host "Battery status: $batteryStatus"
 
@@ -552,7 +613,7 @@ catch {
 }
 
 
-# 11. Generate HTML health report
+# 12. Generate HTML health report
 
 try {
     $htmlPath = Join-Path $reportDirectory "HealthReport.html"
@@ -564,6 +625,12 @@ try {
         default    { "#6c757d" }
     }
 
+$cpuStatusColor = switch ($cpuStatus) {
+    "OK"       { "#198754" }
+    "WARNING"  { "#ffc107" }
+    "CRITICAL" { "#dc3545" }
+    default    { "#6c757d" }
+}
 
 $ramStatusColor = switch ($ramStatus) {
     "OK"       { "#198754" }
@@ -692,6 +759,16 @@ footer {
 </div>
 
 <div class="card">
+    <h2>CPU Health</h2>
+    <p><strong>CPU Usage:</strong> $cpuUsage %</p>
+    <p><strong>CPU Status:</strong>
+    <span style="color:$cpuStatusColor;font-weight:bold">
+    $cpuStatus
+    </span></p>
+</div>
+
+
+<div class="card">
     <h2>RAM Health</h2>
     <p><strong>Total RAM:</strong> $totalRAMGB GB</p>
     <p><strong>Used RAM:</strong> $usedRAMGB GB</p>
@@ -743,7 +820,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 12. Completion
+# 13. Completion
 Write-Host "`n==================================" -ForegroundColor Cyan
 Write-Host "Health check completed." -ForegroundColor Green
 Write-Host "Reports folder: $reportDirectory" -ForegroundColor Cyan
