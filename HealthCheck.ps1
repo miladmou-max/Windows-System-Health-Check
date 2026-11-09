@@ -269,6 +269,116 @@ catch {
     Write-Host $_.Exception.Message
 }
 
+# 8. Battery Monitoring
+
+Write-Host "`n--- Battery Information ---" -ForegroundColor Yellow
+
+try {
+    $batteryReportPath = Join-Path $env:TEMP "BatteryReport.html"
+
+    $batteryCommand = Start-Process -FilePath "powercfg.exe" `
+        -ArgumentList "/batteryreport", "/output", "`"$batteryReportPath`"" `
+        -Wait -PassThru -NoNewWindow
+
+    if ($batteryCommand.ExitCode -ne 0 -or
+        -not (Test-Path $batteryReportPath)) {
+        throw "Battery report could not be generated."
+    }
+
+    $batteryHtml = Get-Content -Path $batteryReportPath -Raw -ErrorAction Stop
+
+$batteryText = [System.Net.WebUtility]::HtmlDecode(
+    [regex]::Replace($batteryHtml, '<[^>]+>', ' ')
+)
+
+    $designMatch = [regex]::Match(
+        $batteryText,
+        'DESIGN CAPACITY\s+([\d,]+)\s+mWh',
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+
+    $fullChargeMatch = [regex]::Match(
+        $batteryText,
+        'FULL CHARGE CAPACITY\s+([\d,]+)\s+mWh',
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+
+    if (-not $designMatch.Success -or
+        -not $fullChargeMatch.Success) {
+        throw "Battery capacity information is unavailable."
+    }
+
+    $designCapacity = [double](($designMatch.Groups[1].Value) -replace ',', '')
+    $fullChargeCapacity = [double](($fullChargeMatch.Groups[1].Value) -replace ',', '')
+
+    if ($designCapacity -le 0 -or $fullChargeCapacity -le 0) {
+    throw "Invalid battery capacity values."
+}
+
+$batteryInfo = Get-CimInstance -ClassName Win32_Battery `
+    -ErrorAction SilentlyContinue
+
+if ($null -eq $batteryInfo) {
+    throw "Battery information is unavailable through WMI."
+}
+
+if ($null -eq $batteryInfo.DesignCapacity -or
+    $null -eq $batteryInfo.FullChargeCapacity) {
+    throw "Battery capacity data is incomplete. Health cannot be verified."
+}
+
+    $batteryHealth = [math]::Round(
+        ($fullChargeCapacity / $designCapacity) * 100, 2
+    )
+
+    $batteryWear = [math]::Round(
+        100 - $batteryHealth, 2
+    )
+
+    if ($batteryHealth -le 20) {
+        $batteryStatus = "CRITICAL"
+    }
+    elseif ($batteryHealth -le 50) {
+        $batteryStatus = "WARNING"
+    }
+    else {
+        $batteryStatus = "OK"
+    }
+
+    $batteryReport = [PSCustomObject]@{
+        ComputerName       = $env:COMPUTERNAME
+        ReportDate         = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        DesignCapacitymWh  = $designCapacity
+        FullChargeCapacitymWh = $fullChargeCapacity
+        BatteryHealthPercent = $batteryHealth
+        BatteryWearPercent = $batteryWear
+        Status             = $batteryStatus
+    }
+
+    Write-Host "Design Capacity: $designCapacity mWh"
+    Write-Host "Full Charge Capacity: $fullChargeCapacity mWh"
+    Write-Host "Battery Health: $batteryHealth %"
+    Write-Host "Battery Wear: $batteryWear %"
+    Write-Host "Battery Status: $batteryStatus"
+
+    $batteryCsvPath = Join-Path $reportDirectory "BatteryReport.csv"
+
+    $batteryReport | Export-Csv -Path $batteryCsvPath `
+        -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+
+    Write-Host "Battery report saved: $batteryCsvPath" `
+        -ForegroundColor Green
+}
+catch {
+    $batteryStatus = "UNKNOWN"
+    $designCapacity = "N/A"
+    $fullChargeCapacity = "N/A"
+    $batteryHealth = "N/A"
+    $batteryWear = "N/A"
+
+    Write-Host "Battery information unavailable." -ForegroundColor Yellow
+    Write-Host $_.Exception.Message
+}
 
 # 8. Network connectivity test
 Write-Host "`n--- Network Test ---" -ForegroundColor Yellow
@@ -381,13 +491,15 @@ else {
 # Determine overall status
 
 if ($diskStatus -eq "CRITICAL" -or
-    $ramStatus -eq "CRITICAL") {
+    $ramStatus -eq "CRITICAL" -or
+    $batteryStatus -eq "CRITICAL") {
 
     $overallStatus = "CRITICAL"
 }
 elseif ($diskStatus -eq "WARNING" -or
         $networkStatus -eq "WARNING" -or
-        $ramStatus -eq "WARNING") {
+        $ramStatus -eq "WARNING" -or
+        $batteryStatus -eq "WARNING") {
 
     $overallStatus = "WARNING"
 }
@@ -402,6 +514,7 @@ $healthSummary = [PSCustomObject]@{
     ReportDate    = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     DiskStatus    = $diskStatus
     RAMStatus     = $ramStatus
+    BatteryStatus = $batteryStatus
     NetworkStatus = $networkStatus
     OverallStatus = $overallStatus
 }
@@ -409,6 +522,8 @@ $healthSummary = [PSCustomObject]@{
 # Display results
 Write-Host "Disk status:    $diskStatus"
 Write-Host "Network status: $networkStatus"
+Write-Host "RAM status:     $ramStatus"
+Write-Host "Battery status: $batteryStatus"
 
 if ($overallStatus -eq "OK") {
     Write-Host "Overall status: OK" -ForegroundColor Green
@@ -457,10 +572,11 @@ $ramStatusColor = switch ($ramStatus) {
     default    { "#6c757d" }
 }
 
-$ramStatusColor = switch ($ramStatus) {
+$batteryStatusColor = switch ($batteryStatus) {
     "OK"       { "#198754" }
     "WARNING"  { "#ffc107" }
     "CRITICAL" { "#dc3545" }
+    "UNKNOWN"  { "#6c757d" }
     default    { "#6c757d" }
 }
     $diskRows = foreach ($disk in $systemReport) {
@@ -585,6 +701,18 @@ footer {
 <span style="color:$ramStatusColor;font-weight:bold">
 $ramStatus
 </span></p>
+</div>
+
+<div class="card">
+    <h2>Battery Health</h2>
+    <p><strong>Design Capacity:</strong> $designCapacity mWh</p>
+    <p><strong>Full Charge Capacity:</strong> $fullChargeCapacity mWh</p>
+    <p><strong>Battery Health:</strong> $batteryHealth %</p>
+    <p><strong>Battery Wear:</strong> $batteryWear %</p>
+    <p><strong>Battery Status:</strong>
+    <span style="color:$batteryStatusColor;font-weight:bold">
+    $batteryStatus
+    </span></p>
 </div>
 
 <div class="card">
