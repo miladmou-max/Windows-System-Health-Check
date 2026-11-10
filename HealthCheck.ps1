@@ -72,7 +72,55 @@ $disks = @(
 
 $disks | Format-Table -AutoSize
 
-# 4. Disk space alerts and combined report
+# 4. Disk Health Monitoring (SMART)
+
+Write-Host "`n--- Disk Health Monitoring ---" -ForegroundColor Yellow
+
+$physicalDiskHealth = @()
+
+try {
+    $physicalDisks = Get-PhysicalDisk -ErrorAction Stop
+
+    foreach ($disk in $physicalDisks) {
+
+        $healthStatus = switch -Regex ([string]$disk.HealthStatus) {
+    "^Healthy$"   { "HEALTHY"; break }
+    "^Warning$"   { "WARNING"; break }
+    "^Unhealthy$" { "CRITICAL"; break }
+    default       { "UNKNOWN" }
+}
+
+# Disk Health Test Mode
+
+if ($TestMode -eq "Warning") {
+    $healthStatus = "WARNING"
+}
+elseif ($TestMode -eq "Critical") {
+    $healthStatus = "CRITICAL"
+}
+
+        $diskReport = [PSCustomObject]@{
+            DiskName          = $disk.FriendlyName
+            Model             = $disk.Model
+            Health            = $healthStatus
+            OperationalStatus = $disk.OperationalStatus
+        }
+
+        $physicalDiskHealth += $diskReport
+
+        Write-Host "Disk: $($diskReport.DiskName)"
+        Write-Host "Model: $($diskReport.Model)"
+        Write-Host "Health: $($diskReport.Health)"
+        Write-Host "Operational Status: $($diskReport.OperationalStatus)"
+        Write-Host ""
+    }
+}
+catch {
+    Write-Host "Disk health information unavailable." -ForegroundColor Yellow
+    Write-Host $_.Exception.Message
+}
+
+# 5. Disk space alerts and combined report
 Write-Host "`n--- Disk Space Alerts ---" -ForegroundColor Yellow
 
 $systemReport = foreach ($disk in $disks) {
@@ -137,7 +185,7 @@ if ($TestMode -ne "None") {
     }
 }
 
-# 5. Export disk report
+# 6. Export disk report
 try {
     $diskReportPath = Join-Path $reportDirectory "DiskReport.csv"
 
@@ -152,7 +200,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 6. Export combined system health report
+# 7. Export combined system health report
 try {
     $combinedReportPath = Join-Path $reportDirectory "SystemHealthReport.csv"
 
@@ -168,7 +216,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 6. CPU Monitoring
+# 8. CPU Monitoring
 
 Write-Host "`n--- CPU Information ---" -ForegroundColor Yellow
 
@@ -226,7 +274,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 7. RAM Monitoring
+# 9. RAM Monitoring
 
 Write-Host "`n--- RAM Information ---" -ForegroundColor Yellow
 
@@ -326,7 +374,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 8. Battery Monitoring
+# 9. Battery Monitoring
 
 Write-Host "`n--- Battery Information ---" -ForegroundColor Yellow
 
@@ -437,7 +485,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 9. Network connectivity test
+# 10. Network connectivity test
 Write-Host "`n--- Network Test ---" -ForegroundColor Yellow
 
 try {
@@ -467,7 +515,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 10. Service status summary
+# 11. Service status summary
 Write-Host "`n--- Service Status Summary ---" -ForegroundColor Yellow
 
 try {
@@ -509,7 +557,7 @@ catch {
 }
 
 
-# 11. Overall health summary
+# 12. Overall health summary
 
 Write-Host "`n--- Overall System Health ---" -ForegroundColor Yellow
 
@@ -544,10 +592,38 @@ else {
     $networkStatus = "WARNING"
 }
 
+# Evaluate physical disk health
+
+$physicalDiskCritical = @(
+    $physicalDiskHealth | Where-Object { $_.Health -eq "CRITICAL" }
+).Count -gt 0
+
+$physicalDiskWarning = @(
+    $physicalDiskHealth | Where-Object { $_.Health -eq "WARNING" }
+).Count -gt 0
+
+if ($physicalDiskCritical) {
+    $physicalDiskStatus = "CRITICAL"
+}
+elseif ($physicalDiskWarning) {
+    $physicalDiskStatus = "WARNING"
+}
+elseif (@($physicalDiskHealth).Count -eq 0) {
+    $physicalDiskStatus = "UNKNOWN"
+}
+elseif (@($physicalDiskHealth | Where-Object {
+    $_.Health -eq "UNKNOWN"
+}).Count -gt 0) {
+    $physicalDiskStatus = "UNKNOWN"
+}
+else {
+    $physicalDiskStatus = "HEALTHY"
+}
 
 # Determine overall status
 
 if ($diskStatus -eq "CRITICAL" -or
+    $physicalDiskCritical -or
     $cpuStatus -eq "CRITICAL" -or
     $ramStatus -eq "CRITICAL" -or
     $batteryStatus -eq "CRITICAL") {
@@ -555,6 +631,7 @@ if ($diskStatus -eq "CRITICAL" -or
     $overallStatus = "CRITICAL"
 }
 elseif ($diskStatus -eq "WARNING" -or
+        $physicalDiskWarning -or
         $cpuStatus -eq "WARNING" -or
         $networkStatus -eq "WARNING" -or
         $ramStatus -eq "WARNING" -or
@@ -569,18 +646,24 @@ else {
 
 # Create summary report
 $healthSummary = [PSCustomObject]@{
-    ComputerName  = $env:COMPUTERNAME
-    ReportDate    = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    DiskStatus    = $diskStatus
-    CPUStatus     = $cpuStatus
-    RAMStatus     = $ramStatus
-    BatteryStatus = $batteryStatus
-    NetworkStatus = $networkStatus
-    OverallStatus = $overallStatus
+    ComputerName         = $env:COMPUTERNAME
+    ReportDate           = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    DiskStatus           = $diskStatus
+    PhysicalDiskHealth   = $physicalDiskStatus
+    CPUStatus            = $cpuStatus
+    RAMStatus            = $ramStatus
+    BatteryStatus        = $batteryStatus
+    NetworkStatus        = $networkStatus
+    OverallStatus        = $overallStatus
 }
 
 # Display results
 Write-Host "Disk status:    $diskStatus"
+
+
+
+Write-Host "Physical Disk Health: $physicalDiskStatus"
+
 Write-Host "Network status: $networkStatus"
 Write-Host "CPU status:     $cpuStatus"
 Write-Host "RAM status:     $ramStatus"
@@ -613,7 +696,7 @@ catch {
 }
 
 
-# 12. Generate HTML health report
+# 13. Generate HTML health report
 
 try {
     $htmlPath = Join-Path $reportDirectory "HealthReport.html"
@@ -646,6 +729,15 @@ $batteryStatusColor = switch ($batteryStatus) {
     "UNKNOWN"  { "#6c757d" }
     default    { "#6c757d" }
 }
+
+$physicalDiskStatusColor = switch ($physicalDiskStatus) {
+    "HEALTHY"  { "#198754" }
+    "WARNING"  { "#ffc107" }
+    "CRITICAL" { "#dc3545" }
+    "UNKNOWN"  { "#6c757d" }
+    default    { "#6c757d" }
+}
+
     $diskRows = foreach ($disk in $systemReport) {
         $color = if ($disk.Status -eq "WARNING") {
             "#dc3545"
@@ -793,6 +885,17 @@ $ramStatus
 </div>
 
 <div class="card">
+    <h2>Physical Disk Health</h2>
+    <p><strong>Disk Name:</strong> $($diskReport.DiskName)</p>
+    <p><strong>Model:</strong> $($diskReport.Model)</p>
+    <p><strong>Health:</strong>
+<span style="color:$physicalDiskStatusColor;font-weight:bold">
+$physicalDiskStatus
+</span></p>
+    <p><strong>Operational Status:</strong> $($diskReport.OperationalStatus)</p>
+</div>
+
+<div class="card">
     <h2>Network Connectivity</h2>
     <p><strong>Status:</strong> $networkStatus</p>
     <p>$networkText</p>
@@ -820,7 +923,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 13. Completion
+# 14. Completion
 Write-Host "`n==================================" -ForegroundColor Cyan
 Write-Host "Health check completed." -ForegroundColor Green
 Write-Host "Reports folder: $reportDirectory" -ForegroundColor Cyan
