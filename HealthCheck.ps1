@@ -169,12 +169,32 @@ try {
             MediaErrors    = $smart.media_errors
             ErrorLogEntries = $smart.num_err_log_entries
             TemperatureStatus = $tempStatus
+            HealthStatus = $healthStatus
         }
 
         Write-Host "Device: $($device.name)"
         Write-Host "Temperature: $temperature C"
         Write-Host "Status: $tempStatus"
     }
+
+$percentageUsed = [int]$smart.percentage_used
+$availableSpare = [int]$smart.available_spare
+$spareThreshold = [int]$smart.available_spare_threshold
+$mediaErrors = [long]$smart.media_errors
+
+if ($percentageUsed -ge 100 -or $availableSpare -eq 0) {
+    $healthStatus = "CRITICAL"
+}
+elseif (
+    $percentageUsed -ge 90 -or
+    $availableSpare -le $spareThreshold -or
+    $mediaErrors -gt 0
+) {
+    $healthStatus = "WARNING"
+}
+else {
+    $healthStatus = "OK"
+}
 
     if (@($nvmeHealth).Count -eq 0) {
         Write-Host "No NVMe device detected or SMART data unavailable." `
@@ -205,6 +225,27 @@ if (@($nvmeHealth).Count -gt 0) {
     }
     else {
         $nvmeTemperatureStatus = "OK"
+    }
+}
+
+# NVMe Overall Health Status
+
+$nvmeHealthStatus = "UNKNOWN"
+
+if (@($nvmeHealth).Count -gt 0) {
+
+    if (@($nvmeHealth | Where-Object {
+        $_.HealthStatus -eq "CRITICAL"
+    }).Count -gt 0) {
+        $nvmeHealthStatus = "CRITICAL"
+    }
+    elseif (@($nvmeHealth | Where-Object {
+        $_.HealthStatus -eq "WARNING"
+    }).Count -gt 0) {
+        $nvmeHealthStatus = "WARNING"
+    }
+    else {
+        $nvmeHealthStatus = "OK"
     }
 }
 
@@ -713,6 +754,7 @@ else {
 if ($diskStatus -eq "CRITICAL" -or
     $physicalDiskCritical -or
     $nvmeTemperatureStatus -eq "CRITICAL" -or
+    $nvmeHealthStatus -eq "CRITICAL" -or
     $cpuStatus -eq "CRITICAL" -or
     $ramStatus -eq "CRITICAL" -or
     $batteryStatus -eq "CRITICAL") {
@@ -722,6 +764,7 @@ if ($diskStatus -eq "CRITICAL" -or
 elseif ($diskStatus -eq "WARNING" -or
         $physicalDiskWarning -or
         $nvmeTemperatureStatus -eq "WARNING" -or
+        $nvmeHealthStatus -eq "WARNING" -or
         $cpuStatus -eq "WARNING" -or
         $networkStatus -eq "WARNING" -or
         $ramStatus -eq "WARNING" -or
@@ -746,6 +789,7 @@ $healthSummary = [PSCustomObject]@{
     "N/A"
 }
 NVMeTemperatureStatus = $nvmeTemperatureStatus
+NVMeHealthStatus      = $nvmeHealthStatus
     CPUStatus            = $cpuStatus
     RAMStatus            = $ramStatus
     BatteryStatus        = $batteryStatus
@@ -1001,6 +1045,31 @@ $physicalDiskStatus
     <span style="font-weight:bold">
     $nvmeTemperatureStatus
     </span></p>
+    <p><strong>NVMe Health Status:</strong>
+<span style="font-weight:bold">
+$nvmeHealthStatus
+</span></p>
+
+    <p><strong>Available Spare:</strong>
+$(if ($nvmeHealth.Count -gt 0) {
+    "$($nvmeHealth[0].AvailableSpare)%"
+} else {
+    "N/A"
+})</p>
+
+<p><strong>Percentage Used:</strong>
+$(if ($nvmeHealth.Count -gt 0) {
+    "$($nvmeHealth[0].PercentageUsed)%"
+} else {
+    "N/A"
+})</p>
+
+<p><strong>Media Errors:</strong>
+$(if ($nvmeHealth.Count -gt 0) {
+    $nvmeHealth[0].MediaErrors
+} else {
+    "N/A"
+})</p>
 
 </div>
 
