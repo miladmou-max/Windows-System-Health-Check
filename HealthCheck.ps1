@@ -175,10 +175,21 @@ try {
         Write-Host "Temperature: $temperature C"
         Write-Host "Status: $tempStatus"
     }
+
+    if (@($nvmeHealth).Count -eq 0) {
+        Write-Host "No NVMe device detected or SMART data unavailable." `
+            -ForegroundColor Yellow
+    }
 }
 catch {
-    Write-Host "NVMe SMART information unavailable." `
-        -ForegroundColor Yellow
+    if (-not (Get-Command smartctl -ErrorAction SilentlyContinue)) {
+        Write-Host "smartctl is not installed. NVMe monitoring skipped." `
+            -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "NVMe SMART information unavailable." `
+            -ForegroundColor Yellow
+    }
 }
 
 if (@($nvmeHealth).Count -gt 0) {
