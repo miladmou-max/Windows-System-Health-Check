@@ -120,7 +120,84 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 5. Disk space alerts and combined report
+# 5. NVMe Temperature and SMART Monitoring
+
+Write-Host "`n--- NVMe Temperature Monitoring ---" -ForegroundColor Yellow
+
+$nvmeHealth = @()
+$nvmeTemperatureStatus = "UNKNOWN"
+
+try {
+    $smartctlCommand = Get-Command smartctl -ErrorAction Stop
+
+    $devices = (& $smartctlCommand.Source --scan-open -j 2>$null |
+        ConvertFrom-Json -ErrorAction Stop).devices
+
+    foreach ($device in $devices) {
+
+        if ($device.protocol -ne "NVMe") {
+            continue
+        }
+
+        $result = & $smartctlCommand.Source -a -j `
+            $device.name -d $device.type 2>$null |
+            ConvertFrom-Json -ErrorAction Stop
+
+        $smart = $result.nvme_smart_health_information_log
+
+        if ($null -eq $smart) {
+            continue
+        }
+
+        $temperature = [int]$smart.temperature
+
+        if ($temperature -ge 80) {
+            $tempStatus = "CRITICAL"
+        }
+        elseif ($temperature -ge 70) {
+            $tempStatus = "WARNING"
+        }
+        else {
+            $tempStatus = "OK"
+        }
+
+        $nvmeHealth += [PSCustomObject]@{
+            Device         = $device.name
+            Temperature    = $temperature
+            AvailableSpare = $smart.available_spare
+            PercentageUsed = $smart.percentage_used
+            MediaErrors    = $smart.media_errors
+            ErrorLogEntries = $smart.num_err_log_entries
+            TemperatureStatus = $tempStatus
+        }
+
+        Write-Host "Device: $($device.name)"
+        Write-Host "Temperature: $temperature C"
+        Write-Host "Status: $tempStatus"
+    }
+}
+catch {
+    Write-Host "NVMe SMART information unavailable." `
+        -ForegroundColor Yellow
+}
+
+if (@($nvmeHealth).Count -gt 0) {
+    if (@($nvmeHealth | Where-Object {
+        $_.TemperatureStatus -eq "CRITICAL"
+    }).Count -gt 0) {
+        $nvmeTemperatureStatus = "CRITICAL"
+    }
+    elseif (@($nvmeHealth | Where-Object {
+        $_.TemperatureStatus -eq "WARNING"
+    }).Count -gt 0) {
+        $nvmeTemperatureStatus = "WARNING"
+    }
+    else {
+        $nvmeTemperatureStatus = "OK"
+    }
+}
+
+# 6. Disk space alerts and combined report
 Write-Host "`n--- Disk Space Alerts ---" -ForegroundColor Yellow
 
 $systemReport = foreach ($disk in $disks) {
@@ -185,7 +262,7 @@ if ($TestMode -ne "None") {
     }
 }
 
-# 6. Export disk report
+# 7. Export disk report
 try {
     $diskReportPath = Join-Path $reportDirectory "DiskReport.csv"
 
@@ -200,7 +277,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 7. Export combined system health report
+# 8. Export combined system health report
 try {
     $combinedReportPath = Join-Path $reportDirectory "SystemHealthReport.csv"
 
@@ -216,7 +293,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 8. CPU Monitoring
+# 9. CPU Monitoring
 
 Write-Host "`n--- CPU Information ---" -ForegroundColor Yellow
 
@@ -274,7 +351,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 9. RAM Monitoring
+# 10. RAM Monitoring
 
 Write-Host "`n--- RAM Information ---" -ForegroundColor Yellow
 
@@ -374,7 +451,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 9. Battery Monitoring
+# 11. Battery Monitoring
 
 Write-Host "`n--- Battery Information ---" -ForegroundColor Yellow
 
@@ -485,7 +562,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 10. Network connectivity test
+# 12. Network connectivity test
 Write-Host "`n--- Network Test ---" -ForegroundColor Yellow
 
 try {
@@ -515,7 +592,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 11. Service status summary
+# 13. Service status summary
 Write-Host "`n--- Service Status Summary ---" -ForegroundColor Yellow
 
 try {
@@ -557,7 +634,7 @@ catch {
 }
 
 
-# 12. Overall health summary
+# 14. Overall health summary
 
 Write-Host "`n--- Overall System Health ---" -ForegroundColor Yellow
 
@@ -624,6 +701,7 @@ else {
 
 if ($diskStatus -eq "CRITICAL" -or
     $physicalDiskCritical -or
+    $nvmeTemperatureStatus -eq "CRITICAL" -or
     $cpuStatus -eq "CRITICAL" -or
     $ramStatus -eq "CRITICAL" -or
     $batteryStatus -eq "CRITICAL") {
@@ -632,6 +710,7 @@ if ($diskStatus -eq "CRITICAL" -or
 }
 elseif ($diskStatus -eq "WARNING" -or
         $physicalDiskWarning -or
+        $nvmeTemperatureStatus -eq "WARNING" -or
         $cpuStatus -eq "WARNING" -or
         $networkStatus -eq "WARNING" -or
         $ramStatus -eq "WARNING" -or
@@ -650,6 +729,12 @@ $healthSummary = [PSCustomObject]@{
     ReportDate           = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     DiskStatus           = $diskStatus
     PhysicalDiskHealth   = $physicalDiskStatus
+    NVMeTemperature      = if ($nvmeHealth.Count -gt 0) {
+    $nvmeHealth[0].Temperature
+} else {
+    "N/A"
+}
+NVMeTemperatureStatus = $nvmeTemperatureStatus
     CPUStatus            = $cpuStatus
     RAMStatus            = $ramStatus
     BatteryStatus        = $batteryStatus
@@ -696,7 +781,7 @@ catch {
 }
 
 
-# 13. Generate HTML health report
+# 15. Generate HTML health report
 
 try {
     $htmlPath = Join-Path $reportDirectory "HealthReport.html"
@@ -893,6 +978,19 @@ $ramStatus
 $physicalDiskStatus
 </span></p>
     <p><strong>Operational Status:</strong> $($diskReport.OperationalStatus)</p>
+
+    <p><strong>NVMe Temperature:</strong>
+    $(if ($nvmeHealth.Count -gt 0) {
+        "$($nvmeHealth[0].Temperature) &deg;C"
+    } else {
+        "Not Available"
+    })</p>
+
+    <p><strong>Temperature Status:</strong>
+    <span style="font-weight:bold">
+    $nvmeTemperatureStatus
+    </span></p>
+
 </div>
 
 <div class="card">
@@ -923,7 +1021,7 @@ catch {
     Write-Host $_.Exception.Message
 }
 
-# 14. Completion
+# 16. Completion
 Write-Host "`n==================================" -ForegroundColor Cyan
 Write-Host "Health check completed." -ForegroundColor Green
 Write-Host "Reports folder: $reportDirectory" -ForegroundColor Cyan
