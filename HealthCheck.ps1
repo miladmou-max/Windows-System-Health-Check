@@ -1,4 +1,4 @@
-
+﻿
 <#
 .SYNOPSIS
     Windows System Health Check
@@ -11,7 +11,7 @@
     Milad
 
 .VERSION
-    1.1
+    1.3
 
 .COPYRIGHT
     Copyright (c) 2026 Milad. All rights reserved.
@@ -28,6 +28,72 @@ param(
     [ValidateSet("None", "Warning", "Critical")]
     [string]$TestMode = "None"
 )
+
+# Logging Configuration
+
+$logFolder = Join-Path $PSScriptRoot "Logs"
+
+if (-not (Test-Path $logFolder)) {
+    New-Item -Path $logFolder -ItemType Directory -Force |
+        Out-Null
+}
+
+$logFile = Join-Path $logFolder (
+    "HealthCheck_{0}.log" -f (Get-Date -Format "yyyy-MM-dd_HH-mm-ss")
+)
+
+$eventLogFile = Join-Path $logFolder (
+    "HealthCheck_Events_{0}.log" -f (Get-Date -Format "yyyy-MM-dd_HH-mm-ss")
+)
+
+Start-Transcript -Path $logFile -Append
+# Error Tracking
+$hadErrors = $false
+
+# Central Logging Function
+
+
+function Write-Log {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Message,
+
+        [ValidateSet("INFO", "WARNING", "CRITICAL", "ERROR")]
+        [string]$Level = "INFO",
+
+        [System.Management.Automation.ErrorRecord]$ErrorRecord
+    )
+
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+    $logMessage = "[$timestamp] [$Level] $Message"
+
+    if ($ErrorRecord) {
+        $logMessage += " | Exception: $($ErrorRecord.Exception.Message)"
+        $logMessage += " | Line: $($ErrorRecord.InvocationInfo.ScriptLineNumber)"
+        $logMessage += " | Command: $($ErrorRecord.InvocationInfo.MyCommand)"
+    }
+
+    try {
+        Add-Content -Path $eventLogFile -Value $logMessage -ErrorAction Stop
+    }
+    catch {
+        Write-Warning "Could not write to event log: $($_.Exception.Message)"
+    }
+
+    switch ($Level) {
+        "INFO"     { Write-Host $logMessage -ForegroundColor Cyan }
+        "WARNING"  { Write-Host $logMessage -ForegroundColor Yellow }
+        "CRITICAL" { Write-Host $logMessage -ForegroundColor Red }
+        "ERROR"    { Write-Host $logMessage -ForegroundColor Red }
+    }
+}
+
+
+# Log script startup
+
+Write-Log -Message "Windows System Health Check started." -Level INFO
+Write-Log -Message "Computer: $env:COMPUTERNAME | User: $env:USERNAME" -Level INFO
 
 # 1. Prepare report directory
 $reportDirectory = Join-Path $HOME "Documents\Windows-System-Health-Check"
@@ -51,8 +117,11 @@ try {
     $computer | Format-List
 }
 catch {
-    Write-Host "Could not collect computer information." -ForegroundColor Red
-    Write-Host $_.Exception.Message
+    $hadErrors = $true
+
+    Write-Log -Message "Could not collect computer information." `
+        -Level ERROR -ErrorRecord $_
+
     exit 1
 }
 
@@ -60,15 +129,30 @@ catch {
 Write-Host "`n--- Disk Information ---" -ForegroundColor Yellow
 
 $disks = @(
-    Get-PSDrive -PSProvider FileSystem |
-        Select-Object Name,
-            @{Name = "UsedGB"; Expression = {
-                [math]::Round($_.Used / 1GB, 2)
-            }},
-            @{Name = "FreeGB"; Expression = {
-                [math]::Round($_.Free / 1GB, 2)
-            }}
+    Get-CimInstance Win32_LogicalDisk |
+        Where-Object {
+            $_.DriveType -in @(2, 3, 4, 6) -and
+            $null -ne $_.Size -and
+            $_.Size -gt 0
+        } |
+        Select-Object @{
+            Name = "Name"
+            Expression = { $_.DeviceID.TrimEnd(':') }
+        }, @{
+            Name = "UsedGB"
+            Expression = {
+                [math]::Round(
+                    ($_.Size - $_.FreeSpace) / 1GB, 2
+                )
+            }
+        }, @{
+            Name = "FreeGB"
+            Expression = {
+                [math]::Round($_.FreeSpace / 1GB, 2)
+            }
+        }
 )
+
 
 $disks | Format-Table -AutoSize
 
@@ -325,8 +409,10 @@ try {
         -ForegroundColor Green
 }
 catch {
-    Write-Host "ERROR: Could not save disk report." -ForegroundColor Red
-    Write-Host $_.Exception.Message
+    $hadErrors = $true
+
+    Write-Log -Message "Could not save disk report." `
+        -Level ERROR -ErrorRecord $_
 }
 
 # 8. Export combined system health report
@@ -340,9 +426,10 @@ try {
         -ForegroundColor Green
 }
 catch {
-    Write-Host "ERROR: Could not save system health report." `
-        -ForegroundColor Red
-    Write-Host $_.Exception.Message
+    $hadErrors = $true
+
+    Write-Log -Message "Could not save system health report." `
+        -Level ERROR -ErrorRecord $_
 }
 
 # 9. CPU Monitoring
@@ -396,11 +483,13 @@ elseif ($TestMode -eq "Critical") {
     Write-Host "CPU report saved: $cpuCsvPath" -ForegroundColor Green
 }
 catch {
+    $hadErrors = $true
+
     $cpuStatus = "UNKNOWN"
     $cpuUsage = "N/A"
 
-    Write-Host "CPU information unavailable." -ForegroundColor Yellow
-    Write-Host $_.Exception.Message
+    Write-Log -Message "CPU information unavailable." `
+        -Level ERROR -ErrorRecord $_
 }
 
 # 10. RAM Monitoring
@@ -497,10 +586,12 @@ try {
         -ForegroundColor Green
 }
 catch {
+    $hadErrors = $true
+
     $ramStatus = "WARNING"
-    Write-Host "ERROR: Could not collect RAM information." `
-        -ForegroundColor Red
-    Write-Host $_.Exception.Message
+
+    Write-Log -Message "Could not collect RAM information." `
+        -Level ERROR -ErrorRecord $_
 }
 
 # 11. Battery Monitoring
@@ -612,6 +703,34 @@ catch {
 
     Write-Host "Battery information unavailable." -ForegroundColor Yellow
     Write-Host $_.Exception.Message
+
+    # Create UNKNOWN battery report
+    $batteryReport = [PSCustomObject]@{
+        ComputerName          = $env:COMPUTERNAME
+        ReportDate            = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        DesignCapacitymWh     = $designCapacity
+        FullChargeCapacitymWh = $fullChargeCapacity
+        BatteryHealthPercent  = $batteryHealth
+        BatteryWearPercent    = $batteryWear
+        Status                = $batteryStatus
+    }
+
+    # Export UNKNOWN battery report
+    try {
+        $batteryCsvPath = Join-Path $reportDirectory "BatteryReport.csv"
+
+        $batteryReport | Export-Csv -Path $batteryCsvPath `
+            -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+
+        Write-Host "Battery report saved: $batteryCsvPath" `
+            -ForegroundColor Green
+    }
+    catch {
+        $hadErrors = $true
+
+        Write-Log -Message "Could not save battery report." `
+            -Level ERROR -ErrorRecord $_
+    }
 }
 
 # 12. Network connectivity test
@@ -639,9 +758,10 @@ try {
         -ForegroundColor Green
 }
 catch {
-    Write-Host "ERROR: Network test or report failed." `
-        -ForegroundColor Red
-    Write-Host $_.Exception.Message
+    $hadErrors = $true
+
+    Write-Log -Message "Network test or report failed." `
+        -Level ERROR -ErrorRecord $_
 }
 
 # 13. Service status summary
@@ -680,9 +800,10 @@ try {
         -ForegroundColor Green
 }
 catch {
-    Write-Host "ERROR: Could not collect or export service information." `
-        -ForegroundColor Red
-    Write-Host $_.Exception.Message
+    $hadErrors = $true
+
+    Write-Log -Message "Could not collect or export service information." `
+        -Level ERROR -ErrorRecord $_
 }
 
 
@@ -776,6 +897,15 @@ else {
     $overallStatus = "OK"
 }
 
+# Log overall system health status
+
+$overallLogLevel = switch ($overallStatus) {
+    "OK"       { "INFO" }
+    "WARNING"  { "WARNING" }
+    "CRITICAL" { "CRITICAL" }
+}
+
+Write-Log -Message "Overall Health: $overallStatus | Disk: $diskStatus | Physical Disk: $physicalDiskStatus | CPU: $cpuStatus | RAM: $ramStatus | Network: $networkStatus | Battery: $batteryStatus" -Level $overallLogLevel
 
 # Create summary report
 $healthSummary = [PSCustomObject]@{
@@ -830,9 +960,202 @@ try {
         -ForegroundColor Green
 }
 catch {
-    Write-Host "ERROR: Could not save health summary." `
-        -ForegroundColor Red
-    Write-Host $_.Exception.Message
+    $hadErrors = $true
+
+    Write-Log -Message "Could not save health summary." `
+        -Level ERROR -ErrorRecord $_
+}
+
+
+# 16. Historical Health Monitoring
+
+try {
+    $historyPath = Join-Path $reportDirectory "HealthHistory.csv"
+
+    $diskHistory = (
+        $disks | ForEach-Object {
+            "$($_.Name): $($_.FreeGB) GB"
+        }
+    ) -join " | "
+
+    # Compare with previous health record
+
+$historyComparisons = [System.Collections.Generic.List[object]]::new()
+
+    $previousRecord = $null
+
+    if (Test-Path $historyPath) {
+        $previousRecord = Import-Csv -Path $historyPath |
+            Where-Object {
+                $_.ComputerName -eq $env:COMPUTERNAME
+            } |
+            Select-Object -Last 1
+    }
+
+    if ($null -eq $previousRecord) {
+
+        Write-Host "`nNo previous history available." `
+            -ForegroundColor Yellow
+
+    }
+    else {
+
+        Write-Host "`n--- Health History Comparison ---" `
+            -ForegroundColor Cyan
+            Write-Host (
+    "Previous Run: {0}" -f $previousRecord.ReportDate
+) -ForegroundColor Gray
+
+Write-Host (
+    "Current Run : {0}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+) -ForegroundColor Gray
+
+        $compareValue = {
+            param(
+                $Label,
+                $OldValue,
+                $NewValue,
+                $Unit,
+                [bool]$HigherIsBetter
+            )
+
+            $oldNumber = 0.0
+            $newNumber = 0.0
+
+            $culture = [Globalization.CultureInfo]::InvariantCulture
+
+            $oldValid = [double]::TryParse(
+                [string]$OldValue,
+                [Globalization.NumberStyles]::Float,
+                $culture,
+                [ref]$oldNumber
+            )
+
+            $newValid = [double]::TryParse(
+                [string]$NewValue,
+                [Globalization.NumberStyles]::Float,
+                $culture,
+                [ref]$newNumber
+            )
+
+            if ($oldValid -and $newValid) {
+
+                $change = $newNumber - $oldNumber
+
+                if ([math]::Abs($change) -lt 0.01) {
+                    $status = "No significant change"
+                }
+                else {
+                    $isImproved = (($change -gt 0) -eq $HigherIsBetter)
+
+                    if ($isImproved) {
+                        $status = "Improved"
+                    }
+                    else {
+                        $status = "Worsened"
+                    }
+                }
+
+                $formattedChange = '{0:+0.##;-0.##;0}' -f $change
+
+                Write-Host (
+    "{0}: {1} {2} ({3})" -f
+    $Label, $formattedChange, $Unit, $status
+)
+
+$historyComparisons.Add(
+    [PSCustomObject]@{
+        Metric   = $Label
+        Previous = $oldNumber
+        Current  = $newNumber
+        Change   = "$formattedChange $Unit"
+        Status   = $status
+    }
+)
+            }
+            else {
+                Write-Host "$Label`: Comparison unavailable"
+            }
+        }
+
+                & $compareValue "CPU" `
+            $previousRecord.CPUUsage $cpuUsage "percentage points" $false
+
+        & $compareValue "RAM Usage" `
+            $previousRecord.RAMUsage $ramUsage "percentage points" $false
+
+        & $compareValue "RAM Free" `
+            $previousRecord.RAMFreeGB $freeRAMGB "GB" $true
+
+        if ($nvmeHealth.Count -gt 0) {
+            & $compareValue "NVMe Temperature" `
+                $previousRecord.NVMeTemperature `
+                $nvmeHealth[0].Temperature "C" $false
+        }
+
+
+
+        # Compare free disk space
+
+        $oldDiskFree = @{}
+
+        $diskPattern = '(?<Drive>[A-Za-z]):\s*(?<Free>\d+(?:\.\d+)?)\s*GB'
+
+        foreach ($match in [regex]::Matches(
+            [string]$previousRecord.DiskFreeSpace,
+            $diskPattern
+        )) {
+            $oldDiskFree[$match.Groups['Drive'].Value] =
+                [double]::Parse(
+                    $match.Groups['Free'].Value,
+                    [Globalization.CultureInfo]::InvariantCulture
+                )
+        }
+
+        foreach ($disk in $disks) {
+
+            if ($oldDiskFree.ContainsKey($disk.Name)) {
+
+                & $compareValue "Drive $($disk.Name) Free Space" `
+    $oldDiskFree[$disk.Name] $disk.FreeGB "GB" $true
+            }
+        }
+    }
+
+    $historyRecord = [PSCustomObject]@{
+        ComputerName       = $env:COMPUTERNAME
+        ReportDate         = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        CPUUsage           = $cpuUsage
+        RAMUsage           = $ramUsage
+        RAMFreeGB          = $freeRAMGB
+        DiskFreeSpace      = $diskHistory
+        NVMeTemperature    = if ($nvmeHealth.Count -gt 0) {
+            $nvmeHealth[0].Temperature
+        } else {
+            "N/A"
+        }
+        NVMeHealthStatus   = $nvmeHealthStatus
+        PhysicalDiskHealth = $physicalDiskStatus
+        OverallStatus      = $overallStatus
+    }
+
+    if (Test-Path $historyPath) {
+        $historyRecord | Export-Csv -Path $historyPath `
+            -NoTypeInformation -Append -Encoding UTF8 -ErrorAction Stop
+    }
+    else {
+        $historyRecord | Export-Csv -Path $historyPath `
+            -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+    }
+
+    Write-Host "Historical health record saved: $historyPath" `
+        -ForegroundColor Green
+}
+catch {
+    $hadErrors = $true
+
+    Write-Log -Message "Could not save historical health record." `
+        -Level ERROR -ErrorRecord $_
 }
 
 
@@ -879,13 +1202,15 @@ $physicalDiskStatusColor = switch ($physicalDiskStatus) {
 }
 
     $diskRows = foreach ($disk in $systemReport) {
-        $color = if ($disk.Status -eq "WARNING") {
-            "#dc3545"
-        } else {
-            "#198754"
-        }
 
-        @"
+    $color = switch ($disk.Status) {
+        "OK"       { "#198754" }
+        "WARNING"  { "#ffc107" }
+        "CRITICAL" { "#dc3545" }
+        default    { "#6c757d" }
+    }
+
+    @"
 <tr>
     <td>$($disk.Drive)</td>
     <td>$($disk.UsedGB) GB</td>
@@ -894,7 +1219,7 @@ $physicalDiskStatusColor = switch ($physicalDiskStatus) {
     <td style="color:$color;font-weight:bold">$($disk.Status)</td>
 </tr>
 "@
-    }
+}
 
     $networkText = if ($networkStatus -eq "OK") {
         "Connected (TCP port 443)"
@@ -914,6 +1239,41 @@ $physicalDiskStatusColor = switch ($physicalDiskStatus) {
         "Not available"
     }
 
+$comparisonRows = if ($historyComparisons.Count -gt 0) {
+
+    foreach ($item in $historyComparisons) {
+
+        $comparisonColor = switch ($item.Status) {
+            "Improved" { "#198754" }
+            "Worsened" { "#dc3545" }
+            "No significant change" { "#6c757d" }
+            default { "#6c757d" }
+        }
+
+        @"
+        <tr>
+            <td>$($item.Metric)</td>
+            <td>$($item.Previous)</td>
+            <td>$($item.Current)</td>
+            <td>$($item.Change)</td>
+            <td style="color:$comparisonColor;font-weight:bold">
+                $($item.Status)
+            </td>
+        </tr>
+"@
+    }
+
+} else {
+
+    @"
+    <tr>
+        <td colspan="5">
+            No previous health history available.
+        </td>
+    </tr>
+"@
+}
+
     $html = @"
 <!DOCTYPE html>
 <html lang="en">
@@ -921,63 +1281,335 @@ $physicalDiskStatusColor = switch ($physicalDiskStatus) {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Windows System Health Report</title>
+
 <style>
+* {
+    box-sizing: border-box;
+}
+
 body {
-    font-family: Arial, sans-serif;
-    max-width: 1000px;
-    margin: 30px auto;
-    padding: 0 20px;
-    background: #f4f6f9;
-    color: #212529;
+    font-family: "Segoe UI", Arial, sans-serif;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 30px 24px;
+    background: #f1f5f9;
+    color: #1e293b;
 }
+
+.header {
+    margin-bottom: 25px;
+}
+
+.header h1 {
+    font-size: 28px;
+    margin: 0 0 8px;
+    color: #0f172a;
+}
+
+.subtitle {
+    color: #64748b;
+    font-size: 14px;
+}
+
 .card {
-    background: white;
-    padding: 22px;
+    background: #ffffff;
+    padding: 24px;
     margin-bottom: 20px;
-    border-radius: 10px;
-    box-shadow: 0 2px 8px #00000012;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
 }
+
+.card h2 {
+    font-size: 17px;
+    margin: 0 0 20px;
+    color: #0f172a;
+}
+
+.overall-card {
+    border-left: 5px solid $statusColor;
+}
+
 .status {
     background: $statusColor;
     color: #ffffff;
-    padding: 12px 18px;
-    border-radius: 6px;
+    padding: 9px 18px;
+    border-radius: 7px;
     display: inline-block;
-    font-weight: bold;
+    font-weight: 700;
+    font-size: 14px;
 }
+
+.info-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+    margin-top: 20px;
+}
+
+.info-item {
+    background: #f8fafc;
+    padding: 12px;
+    border-radius: 8px;
+    font-size: 13px;
+}
+
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.metric-card {
+    background: #ffffff;
+    padding: 20px;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+}
+
+.metric-title {
+    color: #64748b;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.metric-value {
+    font-size: 27px;
+    font-weight: 700;
+    margin: 12px 0;
+    color: #0f172a;
+}
+
+.progress {
+    width: 100%;
+    height: 9px;
+    background: #e2e8f0;
+    border-radius: 10px;
+    overflow: hidden;
+    margin: 12px 0;
+}
+
+.progress-bar {
+    height: 100%;
+    border-radius: 10px;
+    max-width: 100%;
+}
+
+.metric-status {
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.green {
+    color: #198754;
+}
+
+.yellow {
+    color: #b7791f;
+}
+
+.red {
+    color: #dc3545;
+}
+
+.gray {
+    color: #64748b;
+}
+
 table {
     width: 100%;
     border-collapse: collapse;
+    font-size: 13px;
 }
+
 th, td {
-    padding: 12px;
+    padding: 13px;
     text-align: left;
-    border-bottom: 1px solid #dee2e6;
+    border-bottom: 1px solid #e2e8f0;
 }
+
 th {
-    background: #e9ecef;
+    background: #f8fafc;
+    color: #475569;
+    font-weight: 600;
 }
+
+tr:last-child td {
+    border-bottom: none;
+}
+
+.detail-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+}
+
+.detail-item {
+    background: #f8fafc;
+    padding: 14px;
+    border-radius: 8px;
+    font-size: 13px;
+}
+
+.detail-label {
+    color: #64748b;
+    display: block;
+    margin-bottom: 6px;
+}
+
+.detail-value {
+    font-weight: 700;
+    color: #1e293b;
+}
+
+.status-line {
+    margin-top: 12px;
+    font-size: 13px;
+}
+
 footer {
-    color: #6c757d;
+    text-align: center;
+    color: #64748b;
     font-size: 12px;
-    margin-top: 25px;
+    margin-top: 30px;
+    padding: 20px;
+}
+
+@media (max-width: 700px) {
+    body {
+        padding: 16px 10px;
+    }
+
+    .metrics-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .info-grid,
+    .detail-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .card {
+        padding: 17px;
+    }
+
+    table {
+        font-size: 11px;
+    }
+
+    th, td {
+        padding: 9px 6px;
+    }
 }
 </style>
 </head>
-<body>
-<h1>Windows System Health Report</h1>
 
-<div class="card">
-    <h2>Overall Status</h2>
+<body>
+
+<div class="header">
+    <h1>Windows System Health Check</h1>
+    <div class="subtitle">
+        Professional IT System Monitoring Dashboard
+    </div>
+</div>
+
+<div class="card overall-card">
+    <h2>Overall System Health</h2>
+
     <span class="status">$overallStatus</span>
-    <p><strong>Computer:</strong> $env:COMPUTERNAME</p>
-    <p><strong>Report Date:</strong> $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")</p>
-    <p><strong>Windows:</strong> $($computer.WindowsProductName)</p>
-    <p><strong>OS Version:</strong> $($computer.OsVersion)</p>
+
+    <div class="info-grid">
+        <div class="info-item">
+            <strong>Computer:</strong> $env:COMPUTERNAME
+        </div>
+
+        <div class="info-item">
+            <strong>Report Date:</strong> $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        </div>
+
+        <div class="info-item">
+            <strong>Windows:</strong> $($computer.WindowsProductName)
+        </div>
+
+        <div class="info-item">
+            <strong>OS Version:</strong> $($computer.OsVersion)
+        </div>
+    </div>
+</div>
+
+<div class="metrics-grid">
+
+    <div class="metric-card">
+        <div class="metric-title">CPU Usage</div>
+
+        <div class="metric-value">$cpuUsage%</div>
+
+        <div class="progress">
+            <div class="progress-bar"
+                 style="width:$cpuUsage%;background:$cpuStatusColor">
+            </div>
+        </div>
+
+        <div class="metric-status" style="color:$cpuStatusColor">
+            $cpuStatus
+        </div>
+    </div>
+
+    <div class="metric-card">
+        <div class="metric-title">RAM Usage</div>
+
+        <div class="metric-value">$ramUsage%</div>
+
+        <div class="progress">
+            <div class="progress-bar"
+                 style="width:$ramUsage%;background:$ramStatusColor">
+            </div>
+        </div>
+
+        <div class="metric-status" style="color:$ramStatusColor">
+            $ramStatus
+        </div>
+    </div>
+
+    <div class="metric-card">
+        <div class="metric-title">NVMe Temperature</div>
+
+        <div class="metric-value">
+            $(if ($nvmeHealth.Count -gt 0) {
+                "$($nvmeHealth[0].Temperature) &#176;C"
+            } else {
+                "N/A"
+            })
+        </div>
+
+        <div class="metric-status">
+            Temperature: $nvmeTemperatureStatus
+        </div>
+    </div>
+
 </div>
 
 <div class="card">
-    <h2>Disk Health</h2>
+    <h2>Health History Comparison</h2>
+
+    <table>
+        <tr>
+            <th>Metric</th>
+            <th>Previous</th>
+            <th>Current</th>
+            <th>Change</th>
+            <th>Result</th>
+        </tr>
+
+        $($comparisonRows -join "`n")
+    </table>
+</div>
+
+<div class="card">
+    <h2>Disk Space Monitoring</h2>
+
     <table>
         <tr>
             <th>Drive</th>
@@ -986,110 +1618,213 @@ footer {
             <th>Free Space</th>
             <th>Status</th>
         </tr>
+
         $($diskRows -join "`n")
+
     </table>
 </div>
 
 <div class="card">
-    <h2>CPU Health</h2>
-    <p><strong>CPU Usage:</strong> $cpuUsage %</p>
-    <p><strong>CPU Status:</strong>
-    <span style="color:$cpuStatusColor;font-weight:bold">
-    $cpuStatus
-    </span></p>
+    <h2>CPU Information</h2>
+
+    <div class="detail-grid">
+        <div class="detail-item">
+            <span class="detail-label">CPU Usage</span>
+            <span class="detail-value">$cpuUsage%</span>
+        </div>
+
+        <div class="detail-item">
+            <span class="detail-label">CPU Status</span>
+            <span class="detail-value" style="color:$cpuStatusColor">
+                $cpuStatus
+            </span>
+        </div>
+    </div>
 </div>
 
-
 <div class="card">
-    <h2>RAM Health</h2>
-    <p><strong>Total RAM:</strong> $totalRAMGB GB</p>
-    <p><strong>Used RAM:</strong> $usedRAMGB GB</p>
-    <p><strong>Free RAM:</strong> $freeRAMGB GB</p>
-    <p><strong>RAM Usage:</strong> $ramUsage %</p>
-    <p><strong>RAM Status:</strong>
-<span style="color:$ramStatusColor;font-weight:bold">
-$ramStatus
-</span></p>
+    <h2>Memory Information</h2>
+
+    <div class="detail-grid">
+        <div class="detail-item">
+            <span class="detail-label">Total RAM</span>
+            <span class="detail-value">$totalRAMGB GB</span>
+        </div>
+
+        <div class="detail-item">
+            <span class="detail-label">Used RAM</span>
+            <span class="detail-value">$usedRAMGB GB</span>
+        </div>
+
+        <div class="detail-item">
+            <span class="detail-label">Free RAM</span>
+            <span class="detail-value">$freeRAMGB GB</span>
+        </div>
+
+        <div class="detail-item">
+            <span class="detail-label">RAM Usage</span>
+            <span class="detail-value">$ramUsage%</span>
+        </div>
+    </div>
 </div>
 
 <div class="card">
     <h2>Battery Health</h2>
-    <p><strong>Design Capacity:</strong> $designCapacity mWh</p>
-    <p><strong>Full Charge Capacity:</strong> $fullChargeCapacity mWh</p>
-    <p><strong>Battery Health:</strong> $batteryHealth %</p>
-    <p><strong>Battery Wear:</strong> $batteryWear %</p>
-    <p><strong>Battery Status:</strong>
-    <span style="color:$batteryStatusColor;font-weight:bold">
-    $batteryStatus
-    </span></p>
+
+    <div class="detail-grid">
+        <div class="detail-item">
+            <span class="detail-label">Design Capacity</span>
+            <span class="detail-value">$designCapacity mWh</span>
+        </div>
+
+        <div class="detail-item">
+            <span class="detail-label">Full Charge Capacity</span>
+            <span class="detail-value">$fullChargeCapacity mWh</span>
+        </div>
+
+        <div class="detail-item">
+            <span class="detail-label">Battery Health</span>
+            <span class="detail-value">$batteryHealth%</span>
+        </div>
+
+        <div class="detail-item">
+            <span class="detail-label">Battery Wear</span>
+            <span class="detail-value">$batteryWear%</span>
+        </div>
+    </div>
+
+    <p class="status-line">
+        <strong>Battery Status:</strong>
+
+        <span style="color:$batteryStatusColor;font-weight:bold">
+            $batteryStatus
+        </span>
+    </p>
 </div>
 
 <div class="card">
-    <h2>Physical Disk Health</h2>
-    <p><strong>Disk Name:</strong> $($diskReport.DiskName)</p>
-    <p><strong>Model:</strong> $($diskReport.Model)</p>
-    <p><strong>Health:</strong>
-<span style="color:$physicalDiskStatusColor;font-weight:bold">
-$physicalDiskStatus
-</span></p>
-    <p><strong>Operational Status:</strong> $($diskReport.OperationalStatus)</p>
+    <h2>Physical Disk & NVMe Health</h2>
 
-    <p><strong>NVMe Temperature:</strong>
-    $(if ($nvmeHealth.Count -gt 0) {
-        "$($nvmeHealth[0].Temperature) &deg;C"
-    } else {
-        "Not Available"
-    })</p>
+    <div class="detail-grid">
+        <div class="detail-item">
+            <span class="detail-label">Disk Name</span>
+            <span class="detail-value">$($diskReport.DiskName)</span>
+        </div>
 
-    <p><strong>Temperature Status:</strong>
-    <span style="font-weight:bold">
-    $nvmeTemperatureStatus
-    </span></p>
-    <p><strong>NVMe Health Status:</strong>
-<span style="font-weight:bold">
-$nvmeHealthStatus
-</span></p>
+        <div class="detail-item">
+            <span class="detail-label">Model</span>
+            <span class="detail-value">$($diskReport.Model)</span>
+        </div>
 
-    <p><strong>Available Spare:</strong>
-$(if ($nvmeHealth.Count -gt 0) {
-    "$($nvmeHealth[0].AvailableSpare)%"
-} else {
-    "N/A"
-})</p>
+        <div class="detail-item">
+            <span class="detail-label">Physical Disk Health</span>
+            <span class="detail-value" style="color:$physicalDiskStatusColor">
+                $physicalDiskStatus
+            </span>
+        </div>
 
-<p><strong>Percentage Used:</strong>
-$(if ($nvmeHealth.Count -gt 0) {
-    "$($nvmeHealth[0].PercentageUsed)%"
-} else {
-    "N/A"
-})</p>
+        <div class="detail-item">
+            <span class="detail-label">Operational Status</span>
+            <span class="detail-value">$($diskReport.OperationalStatus)</span>
+        </div>
 
-<p><strong>Media Errors:</strong>
-$(if ($nvmeHealth.Count -gt 0) {
-    $nvmeHealth[0].MediaErrors
-} else {
-    "N/A"
-})</p>
+        <div class="detail-item">
+            <span class="detail-label">NVMe Temperature</span>
+            <span class="detail-value">
+                $(if ($nvmeHealth.Count -gt 0) {
+                    "$($nvmeHealth[0].Temperature) &#176;C"
+                } else {
+                    "N/A"
+                })
+            </span>
+        </div>
 
+        <div class="detail-item">
+            <span class="detail-label">Temperature Status</span>
+            <span class="detail-value">$nvmeTemperatureStatus</span>
+        </div>
+
+        <div class="detail-item">
+            <span class="detail-label">NVMe Health Status</span>
+            <span class="detail-value">$nvmeHealthStatus</span>
+        </div>
+
+        <div class="detail-item">
+            <span class="detail-label">Available Spare</span>
+            <span class="detail-value">
+                $(if ($nvmeHealth.Count -gt 0) {
+                    "$($nvmeHealth[0].AvailableSpare)%"
+                } else {
+                    "N/A"
+                })
+            </span>
+        </div>
+
+        <div class="detail-item">
+            <span class="detail-label">Percentage Used</span>
+            <span class="detail-value">
+                $(if ($nvmeHealth.Count -gt 0) {
+                    "$($nvmeHealth[0].PercentageUsed)%"
+                } else {
+                    "N/A"
+                })
+            </span>
+        </div>
+
+        <div class="detail-item">
+            <span class="detail-label">Media Errors</span>
+            <span class="detail-value">
+                $(if ($nvmeHealth.Count -gt 0) {
+                    $nvmeHealth[0].MediaErrors
+                } else {
+                    "N/A"
+                })
+            </span>
+        </div>
+    </div>
 </div>
 
 <div class="card">
     <h2>Network Connectivity</h2>
-    <p><strong>Status:</strong> $networkStatus</p>
-    <p>$networkText</p>
+
+    <div class="detail-grid">
+        <div class="detail-item">
+            <span class="detail-label">Network Status</span>
+            <span class="detail-value">$networkStatus</span>
+        </div>
+
+        <div class="detail-item">
+            <span class="detail-label">Connection</span>
+            <span class="detail-value">$networkText</span>
+        </div>
+    </div>
 </div>
 
 <div class="card">
     <h2>Windows Services</h2>
-    <p><strong>Running Services:</strong> $runningText</p>
-    <p><strong>Stopped Services:</strong> $stoppedText</p>
+
+    <div class="detail-grid">
+        <div class="detail-item">
+            <span class="detail-label">Running Services</span>
+            <span class="detail-value">$runningText</span>
+        </div>
+
+        <div class="detail-item">
+            <span class="detail-label">Stopped Services</span>
+            <span class="detail-value">$stoppedText</span>
+        </div>
+    </div>
 </div>
 
 <footer>
-    Generated by Windows System Health Check | Read-only diagnostic report
+    Generated by Windows System Health Check v1.3
+    <br>
+    Read-only system diagnostic report
 </footer>
+
 </body>
 </html>
+
 "@
 
     $html | Set-Content -Path $htmlPath -Encoding UTF8 -ErrorAction Stop
@@ -1097,12 +1832,39 @@ $(if ($nvmeHealth.Count -gt 0) {
     Write-Host "HTML report saved: $htmlPath" -ForegroundColor Green
 }
 catch {
-    Write-Host "ERROR: Could not generate HTML report." -ForegroundColor Red
-    Write-Host $_.Exception.Message
+    $hadErrors = $true
+
+    Write-Log -Message "Could not generate HTML report." `
+        -Level ERROR -ErrorRecord $_
 }
 
+
 # 16. Completion
-Write-Host "`n==================================" -ForegroundColor Cyan
-Write-Host "Health check completed." -ForegroundColor Green
-Write-Host "Reports folder: $reportDirectory" -ForegroundColor Cyan
-Write-Host "==================================" -ForegroundColor Cyan
+
+try {
+    Write-Host "`n==================================" -ForegroundColor Cyan
+
+    if ($hadErrors) {
+        Write-Log -Message "Health Check completed with errors." -Level WARNING
+        Write-Host "Health check completed with errors." -ForegroundColor Yellow
+    }
+    else {
+        Write-Log -Message "Health Check completed successfully." -Level INFO
+        Write-Host "Health check completed successfully." -ForegroundColor Green
+    }
+
+    Write-Log -Message "Reports saved to: $reportDirectory" -Level INFO
+    Write-Host "Reports folder: $reportDirectory" -ForegroundColor Cyan
+    Write-Host "==================================" -ForegroundColor Cyan
+}
+catch {
+    Write-Warning "An error occurred during the completion process: $($_.Exception.Message)"
+}
+finally {
+    try {
+        Stop-Transcript -ErrorAction Stop
+    }
+    catch {
+        Write-Warning "Could not stop transcript: $($_.Exception.Message)"
+    }
+}

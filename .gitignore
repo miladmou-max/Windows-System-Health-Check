@@ -1,3 +1,17 @@
 *.csv
 HealthReport.html
 HealthCheck_Backup.ps1
+
+# Log files
+Logs/
+
+# Local backup files
+HealthCheck - Backup2.ps1
+HealthCheck_Backup_Before_Finalization.ps1
+HealthCheck_Before_ErrorHandling.ps1
+HealthCheck_backup_before_history.ps1
+HealthCheck_backup_v1.2.ps1
+HealthCheck_v1.3.ps1
+
+HealthCheck_Before_Encoding_Fix.ps1
+HealthCheck_Before_Transcript_Fix.ps1
