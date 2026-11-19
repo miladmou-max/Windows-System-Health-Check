@@ -1193,6 +1193,13 @@ $batteryStatusColor = switch ($batteryStatus) {
     default    { "#6c757d" }
 }
 
+$nvmeHealthStatusColor = switch ($nvmeHealthStatus) {
+    "OK"       { "#198754" }
+    "WARNING"  { "#ffc107" }
+    "CRITICAL" { "#dc3545" }
+    "UNKNOWN"  { "#6c757d" }
+    default    { "#6c757d" }
+}
 $physicalDiskStatusColor = switch ($physicalDiskStatus) {
     "HEALTHY"  { "#198754" }
     "WARNING"  { "#ffc107" }
@@ -1746,7 +1753,7 @@ footer {
 
         <div class="detail-item">
             <span class="detail-label">NVMe Health Status</span>
-            <span class="detail-value">$nvmeHealthStatus</span>
+            <span class="detail-value" style="color:$nvmeHealthStatusColor">$nvmeHealthStatus</span>
         </div>
 
         <div class="detail-item">
