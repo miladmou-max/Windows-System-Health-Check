@@ -168,20 +168,20 @@ try {
     foreach ($disk in $physicalDisks) {
 
         $healthStatus = switch -Regex ([string]$disk.HealthStatus) {
-    "^Healthy$"   { "HEALTHY"; break }
-    "^Warning$"   { "WARNING"; break }
-    "^Unhealthy$" { "CRITICAL"; break }
-    default       { "UNKNOWN" }
-}
+            "^Healthy$"   { "HEALTHY"; break }
+            "^Warning$"   { "WARNING"; break }
+            "^Unhealthy$" { "CRITICAL"; break }
+            default       { "UNKNOWN" }
+        }
 
-# Disk Health Test Mode
+        # Disk Health Test Mode
 
-if ($TestMode -eq "Warning") {
-    $healthStatus = "WARNING"
-}
-elseif ($TestMode -eq "Critical") {
-    $healthStatus = "CRITICAL"
-}
+        if ($TestMode -eq "Warning") {
+            $healthStatus = "WARNING"
+        }
+        elseif ($TestMode -eq "Critical") {
+            $healthStatus = "CRITICAL"
+        }
 
         $diskReport = [PSCustomObject]@{
             DiskName          = $disk.FriendlyName
@@ -200,10 +200,9 @@ elseif ($TestMode -eq "Critical") {
     }
 }
 catch {
-    Write-Host "Disk health information unavailable." -ForegroundColor Yellow
-    Write-Host $_.Exception.Message
+    Write-Log -Message "Disk health information unavailable. Status will be UNKNOWN." `
+        -Level WARNING -ErrorRecord $_
 }
-
 # 5. NVMe Temperature and SMART Monitoring
 
 Write-Host "`n--- NVMe Temperature Monitoring ---" -ForegroundColor Yellow
