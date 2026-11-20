@@ -1199,6 +1199,13 @@ $nvmeHealthStatusColor = switch ($nvmeHealthStatus) {
     "UNKNOWN"  { "#6c757d" }
     default    { "#6c757d" }
 }
+$nvmeTemperatureStatusColor = switch ($nvmeTemperatureStatus) {
+    "OK"       { "#198754" }
+    "WARNING"  { "#ffc107" }
+    "CRITICAL" { "#dc3545" }
+    "UNKNOWN"  { "#6c757d" }
+    default    { "#6c757d" }
+}
 $physicalDiskStatusColor = switch ($physicalDiskStatus) {
     "HEALTHY"  { "#198754" }
     "WARNING"  { "#ffc107" }
@@ -1590,7 +1597,7 @@ footer {
             })
         </div>
 
-        <div class="metric-status">
+        <div class="metric-status" style="color:$nvmeTemperatureStatusColor">
             Temperature: $nvmeTemperatureStatus
         </div>
     </div>
@@ -1747,7 +1754,7 @@ footer {
 
         <div class="detail-item">
             <span class="detail-label">Temperature Status</span>
-            <span class="detail-value">$nvmeTemperatureStatus</span>
+            <span class="detail-value" style="color:$nvmeTemperatureStatusColor">$nvmeTemperatureStatus</span>
         </div>
 
         <div class="detail-item">
