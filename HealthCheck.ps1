@@ -26,7 +26,9 @@ param(
     [int]$WarningThreshold = 15,
 
     [ValidateSet("None", "Warning", "Critical")]
-    [string]$TestMode = "None"
+    [string]$TestMode = "None",
+
+    [switch]$BatteryFailed
 )
 
 # Logging Configuration
@@ -596,7 +598,7 @@ catch {
 # 11. Battery Monitoring
 
 Write-Host "`n--- Battery Information ---" -ForegroundColor Yellow
-
+if (-not $BatteryFailed) {
 try {
     $batteryReportPath = Join-Path $env:TEMP "BatteryReport.html"
 
@@ -730,6 +732,36 @@ catch {
         Write-Log -Message "Could not save battery report." `
             -Level ERROR -ErrorRecord $_
     }
+}
+}
+# Manual Battery Failure Override
+
+if ($BatteryFailed) {
+
+    $designCapacity = "N/A"
+    $fullChargeCapacity = "N/A"
+    $batteryStatus = "FAILED"
+    $batteryHealth = "N/A"
+    $batteryWear = "N/A"
+
+    $batteryReport = [PSCustomObject]@{
+        ComputerName          = $env:COMPUTERNAME
+        ReportDate            = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        DesignCapacitymWh     = $designCapacity
+        FullChargeCapacitymWh = $fullChargeCapacity
+        BatteryHealthPercent  = $batteryHealth
+        BatteryWearPercent    = $batteryWear
+        Status                = $batteryStatus
+        StatusReason          = "Battery cannot power the laptop without AC adapter."
+    }
+
+    Write-Host "Battery Status: FAILED" -ForegroundColor Red
+    Write-Host "Reason: Battery cannot power the laptop without AC adapter."
+
+    $batteryCsvPath = Join-Path $reportDirectory "BatteryReport.csv"
+
+    $batteryReport | Export-Csv -Path $batteryCsvPath `
+        -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
 }
 
 # 12. Network connectivity test
@@ -877,7 +909,8 @@ if ($diskStatus -eq "CRITICAL" -or
     $nvmeHealthStatus -eq "CRITICAL" -or
     $cpuStatus -eq "CRITICAL" -or
     $ramStatus -eq "CRITICAL" -or
-    $batteryStatus -eq "CRITICAL") {
+    $batteryStatus -eq "CRITICAL" -or
+    $batteryStatus -eq "FAILED") {
 
     $overallStatus = "CRITICAL"
 }
@@ -1188,6 +1221,7 @@ $batteryStatusColor = switch ($batteryStatus) {
     "OK"       { "#198754" }
     "WARNING"  { "#ffc107" }
     "CRITICAL" { "#dc3545" }
+    "FAILED"   { "#dc3545" }
     "UNKNOWN"  { "#6c757d" }
     default    { "#6c757d" }
 }
@@ -1285,6 +1319,21 @@ $comparisonRows = if ($historyComparisons.Count -gt 0) {
         </td>
     </tr>
 "@
+}
+
+$batteryStatusReasonHtml = switch ($batteryStatus) {
+
+    "FAILED" {
+        '<p style="color:#dc3545;font-size:13px;margin-top:8px">Battery cannot power the laptop without AC adapter.</p>'
+    }
+
+    "UNKNOWN" {
+        '<p style="color:#6c757d;font-size:13px;margin-top:8px">Battery health could not be verified because capacity information is unavailable.</p>'
+    }
+
+    default {
+        ""
+    }
 }
 
     $html = @"
@@ -1713,6 +1762,8 @@ footer {
             $batteryStatus
         </span>
     </p>
+
+    $batteryStatusReasonHtml
 </div>
 
 <div class="card">

@@ -15,3 +15,7 @@ HealthCheck_v1.3.ps1
 
 HealthCheck_Before_Encoding_Fix.ps1
 HealthCheck_Before_Transcript_Fix.ps1
+
+# Generated battery report and local script backup
+battery-report.html
+HealthCheck.ps1.bak
